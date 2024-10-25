@@ -1,10 +1,10 @@
-// Complete integration with fetch.js code, combined into processPublications.js
+// Complete integration of previous fetch.js code into processPublications.js
 import readline from 'readline';
 import axios from 'axios';
 import { parseStringPromise } from 'xml2js';
 import { table } from 'console';
 
-// Create a readline interface for user input
+// Create an interface to read user input
 const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
@@ -16,35 +16,52 @@ let authorIdsVector = [];
 // Replace with your actual SerpAPI key
 const serpApiKey = '9972e8b6f2847de4227cd23928352530839764d9b2f2249ea8a90aefdddaedb7';
 
-// Function to populate the vector with user input
-async function initializeAuthorIdsVector() {
-    const size = await askQuestion("Enter the size of the vector: ");
-    const vectorSize = parseInt(size);
-    if (isNaN(vectorSize) || vectorSize <= 0) {
-        console.log("Invalid size. Exiting...");
-        rl.close();
-        throw new Error("Invalid size");
-    }
-    for (let count = 0; count < vectorSize; count++) {
-        const googleScholarId = await askQuestion(`Enter Google Scholar ID for author ${count + 1} (leave blank if not available): `);
-        const dblpAuthorId = await askQuestion(`Enter DBLP author ID (PID) for author ${count + 1} (leave blank if not available): `);
-        if (!googleScholarId && !dblpAuthorId) {
-            console.log("At least one ID must be provided. Please try again.");
-            count--; // Retry current index
-            continue;
-        }
-        authorIdsVector.push({
-            googleScholarId: googleScholarId || null,
-            dblpAuthorId: dblpAuthorId || null
-        });
-    }
-    console.log("Author IDs Vector:", authorIdsVector);
-}
-
 // Utility function to ask a question using readline
 function askQuestion(query) {
     return new Promise((resolve) => {
         rl.question(query, resolve);
+    });
+}
+
+// Function to populate the vector with user input
+function initializeAuthorIdsVector() {
+    return new Promise((resolve, reject) => {
+        rl.question("Enter the size of the vector: ", (size) => {
+            size = parseInt(size);
+            if (isNaN(size) || size <= 0) {
+                console.log("Invalid size. Exiting...");
+                rl.close();
+                reject("Invalid size");
+                return;
+            }
+
+            let count = 0;
+            function askForIds() {
+                if (count < size) {
+                    rl.question(`Enter Google Scholar ID for author ${count + 1} (leave blank if not available): `, (googleScholarId) => {
+                        rl.question(`Enter DBLP author ID (PID) for author ${count + 1} (leave blank if not available): `, (dblpAuthorId) => {
+                            // Store the input in the vector only if at least one ID is provided
+                            if (!googleScholarId && !dblpAuthorId) {
+                                console.log("At least one ID must be provided. Please try again.");
+                                return askForIds(); // Ask again for valid IDs
+                            }
+
+                            authorIdsVector.push({
+                                googleScholarId: googleScholarId || null,
+                                dblpAuthorId: dblpAuthorId || null
+                            });
+                            count++;
+                            askForIds(); // Continue asking for the next author
+                        });
+                    });
+                } else {
+                    console.log("Author IDs Vector:", authorIdsVector);
+                    resolve(); // Resolve instead of closing readline here
+                }
+            }
+
+            askForIds(); // Start the loop
+        });
     });
 }
 
@@ -99,39 +116,21 @@ function extractPublications(data, pid) {
             url = publicationType.url || null;
         }
 
-        // Handle page range and total number of pages
-        let pageRange = publicationType.pages || null;
-        let numPages = null;
-        if (pageRange && pageRange.includes('-')) {
-            const [start, end] = pageRange.split('-').map(Number);
-            numPages = end - start + 1;
-        }
-
         return {
             title: publicationType.title || "No Title",
             year: publicationType.year || "No Year",
             journal: publicationType.journal || null,
             booktitle: publicationType.booktitle || null,
-            pageRange: pageRange,
-            numPages: numPages,
+            pages: publicationType.pages || null,
             url: url,
             type: type,
         };
     });
 }
 
-// Function to fetch data for all authors in the vector (fetches once and then processes data)
-async function fetchAllAuthorDetails() {
-    const allPublications = [];
-    for (const author of authorIdsVector) {
-        const { dblpAuthorId } = author;
-        // Fetch DBLP data using PID if available
-        const dblpPublications = await fetchPublications(dblpAuthorId);
-        if (dblpPublications !== null) {
-            allPublications.push(...dblpPublications);
-        }
-    }
-    return allPublications;
+// Function to create a delay
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // Function to display publications in a selected format (tabular or JSON) with title length option
@@ -139,7 +138,7 @@ async function displayPublications(publications) {
     const format = (await askQuestion("Enter display format (table/json): ")).toLowerCase();
     const maxTitleLength = parseInt(await askQuestion("Enter the max characters for title (-1 for full title): "), 10);
     const publicationsToDisplay = publications.map(pub => {
-        const truncatedTitle = maxTitleLength === -1 || pub.title.length <= maxTitleLength
+        const truncatedTitle = maxTitleLength === -1 || !pub.title || pub.title.length <= maxTitleLength
             ? pub.title
             : pub.title.substring(0, maxTitleLength) + '...';
         return {
@@ -155,79 +154,93 @@ async function displayPublications(publications) {
     }
 }
 
-// Function to sort publications by title
-function sortPublicationsByTitle(publications, ascending = true) {
-    return publications.sort((a, b) => ascending ? a.title.localeCompare(b.title) : b.title.localeCompare(a.title));
-}
-
-// Function to sort publications by year
-function sortPublicationsByYear(publications, ascending = true) {
-    return publications.sort((a, b) => ascending ? parseInt(a.year) - parseInt(b.year) : parseInt(b.year) - parseInt(a.year));
-}
-
-// Function to filter publications by type
-function filterPublicationsByType(publications, type) {
-    return publications.filter(pub => pub.type === type);
-}
-
-// Function to filter publications by year or range of years
-function filterPublicationsByYearRange(publications, startYear, endYear) {
-    return publications.filter(pub => {
-        const year = parseInt(pub.year, 10);
-        return year >= startYear && year <= endYear;
-    });
-}
-
 // Function to interactively ask the user for filtering or sorting actions
 async function filterAndSortLoop(publications) {
     let choice;
     do {
         choice = await askQuestion(`
 Choose an action:
-1. Sort by title (A-Z)
-2. Sort by title (Z-A)
+1. Sort by title (Ascending)
+2. Sort by title (Descending)
 3. Sort by year (Ascending)
 4. Sort by year (Descending)
-5. Filter by type (e.g., 'article')
-6. Filter by year range
-7. Exit
+5. Sort by author (Ascending)
+6. Sort by author (Descending)
+7. Filter by title
+8. Filter by year
+9. Filter by author
+10. Exit
 Enter the number of your choice: `);
+
         switch (choice) {
             case '1':
-                const sortedByTitleAsc = sortPublicationsByTitle(publications, true);
+                const sortedByTitleAsc = sortPublicationsByKey(publications, 'title', true);
                 await displayPublications(sortedByTitleAsc);
                 break;
             case '2':
-                const sortedByTitleDesc = sortPublicationsByTitle(publications, false);
+                const sortedByTitleDesc = sortPublicationsByKey(publications, 'title', false);
                 await displayPublications(sortedByTitleDesc);
                 break;
             case '3':
-                const sortedByYearAsc = sortPublicationsByYear(publications, true);
+                const sortedByYearAsc = sortPublicationsByKey(publications, 'year', true);
                 await displayPublications(sortedByYearAsc);
                 break;
             case '4':
-                const sortedByYearDesc = sortPublicationsByYear(publications, false);
+                const sortedByYearDesc = sortPublicationsByKey(publications, 'year', false);
                 await displayPublications(sortedByYearDesc);
                 break;
             case '5':
-                const type = await askQuestion('Enter the type to filter by (e.g., "article"): ');
-                const filteredByType = filterPublicationsByType(publications, type);
-                await displayPublications(filteredByType);
+                const sortedByAuthorAsc = sortPublicationsByKey(publications, 'authors', true);
+                await displayPublications(sortedByAuthorAsc);
                 break;
             case '6':
-                const startYear = parseInt(await askQuestion('Enter start year: '), 10);
-                const endYear = parseInt(await askQuestion('Enter end year: '), 10);
-                const filteredByYearRange = filterPublicationsByYearRange(publications, startYear, endYear);
-                await displayPublications(filteredByYearRange);
+                const sortedByAuthorDesc = sortPublicationsByKey(publications, 'authors', false);
+                await displayPublications(sortedByAuthorDesc);
                 break;
             case '7':
+                const titleFilter = await askQuestion('Enter title filter keyword: ');
+                const filteredByTitle = filterPublicationsByKey(publications, 'title', titleFilter);
+                await displayPublications(filteredByTitle);
+                break;
+            case '8':
+                const yearFilter = await askQuestion('Enter year to filter by: ');
+                const filteredByYear = filterPublicationsByKey(publications, 'year', yearFilter);
+                await displayPublications(filteredByYear);
+                break;
+            case '9':
+                const authorFilter = await askQuestion('Enter author name to filter by: ');
+                const filteredByAuthor = filterPublicationsByKey(publications, 'authors', authorFilter);
+                await displayPublications(filteredByAuthor);
+                break;
+            case '10':
                 console.log('Exiting...');
                 rl.close();
                 break;
             default:
                 console.log('Invalid choice, please try again.');
         }
-    } while (choice !== '7');
+    } while (choice !== '10');
+}
+
+// Function to sort publications by key (title, year, author)
+function sortPublicationsByKey(publications, key, ascending = true) {
+    return publications.sort((a, b) => {
+        if (!a[key] || !b[key]) return 0; // If key is missing, do not change order
+
+        if (ascending) {
+            return a[key].toString().localeCompare(b[key].toString(), undefined, { numeric: true });
+        } else {
+            return b[key].toString().localeCompare(a[key].toString(), undefined, { numeric: true });
+        }
+    });
+}
+
+// Function to filter publications by key (title, year, author) and filter value
+function filterPublicationsByKey(publications, key, value) {
+    return publications.filter(pub => {
+        if (!pub[key]) return false; // Skip publications without the key
+        return pub[key].toString().toLowerCase().includes(value.toLowerCase());
+    });
 }
 
 // Sample main function to demonstrate processing
@@ -239,7 +252,17 @@ async function main() {
         await initializeAuthorIdsVector();
 
         // Fetch all publications once and store them
-        const allPublications = await fetchAllAuthorDetails();
+        let allPublications = [];
+        for (const author of authorIdsVector) {
+            const { dblpAuthorId } = author;
+            // Fetch DBLP data using PID if available
+            const dblpPublications = await fetchPublications(dblpAuthorId);
+            if (dblpPublications !== null) {
+                allPublications.push(...dblpPublications);
+            }
+            await delay(2000); // Add delay to avoid rate-limiting issues
+        }
+
         console.log("All Publications:");
         await displayPublications(allPublications);
 

@@ -149,27 +149,99 @@ function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Function to fetch data for all authors in the vector
+// function to merge dblp and google scholars publications
+function mergePublicationsCommonFields(dblpPublications, googleScholarData) {
+    // Handle null or undefined inputs
+    const dblpPubs = dblpPublications || [];
+    const googlePubs = googleScholarData?.articles || [];
+    
+    // Function to normalize titles for comparison
+    const normalizeTitle = (title) => {
+        return title.toLowerCase()
+            .replace(/[^\w\s]/g, '')  // Remove punctuation
+            .replace(/\s+/g, ' ')     // Normalize whitespace
+            .trim();
+    };
+
+    // Function to get all URLs from a publication entry
+    const getUrls = (urlField) => {
+        if (!urlField) return [];
+        if (typeof urlField === 'string') return [urlField];
+        if (Array.isArray(urlField)) return urlField.filter(url => url);
+        return [];
+    };
+
+    // Create a map to store merged publications
+    const mergedPublicationsMap = new Map();
+    
+    // Process DBLP publications
+    dblpPubs.forEach(pub => {
+        const normalizedTitle = normalizeTitle(pub.title);
+        
+        mergedPublicationsMap.set(normalizedTitle, {
+            title: pub.title,
+            year: parseInt(pub.year) || null,
+            venue: pub.journal || pub.booktitle || '',
+            authors: [], // Will be filled from Google Scholar
+            urls: getUrls(pub.url)
+        });
+    });
+    
+    // Process and merge Google Scholar publications
+    googlePubs.forEach(pub => {
+        const normalizedTitle = normalizeTitle(pub.title);
+        const existingPub = mergedPublicationsMap.get(normalizedTitle);
+        
+        if (existingPub) {
+            // Update existing publication with Google Scholar data
+            if (pub.authors?.length > 0) {
+                existingPub.authors = pub.authors;
+            }
+            if (pub.year) {
+                existingPub.year = parseInt(pub.year) || existingPub.year;
+            }
+            if (pub.publication) {
+                existingPub.venue = existingPub.venue || pub.publication;
+            }
+            
+            // Combine URLs from both sources and remove duplicates
+            const newUrls = getUrls(pub.link);
+            existingPub.urls = [...new Set([...existingPub.urls, ...newUrls])];
+        } else {
+            // Create new entry for Google Scholar publication
+            mergedPublicationsMap.set(normalizedTitle, {
+                title: pub.title,
+                year: parseInt(pub.year) || null,
+                venue: pub.publication || '',
+                authors: pub.authors || [],
+                urls: getUrls(pub.link)
+            });
+        }
+    });
+    
+    // Convert map to array and sort by year
+    return Array.from(mergedPublicationsMap.values())
+        .sort((a, b) => (b.year || 0) - (a.year || 0));
+}
+
 async function fetchAuthorDetails() {
     for (const author of authorIdsVector) {
         const { googleScholarId, dblpAuthorId } = author;
-
-        // Fetch DBLP data using PID if available
+        
         const dblpPublications = await fetchPublications(dblpAuthorId);
-        if (dblpPublications !== null) { 
-            console.log(`Publications for DBLP Author ID ${dblpAuthorId}:`, dblpPublications);
-        }
-
-        // Fetch Google Scholar data if available
         const googleScholarData = await fetchGoogleScholarData(googleScholarId);
-        if (googleScholarData !== null) { 
-            console.log(`Google Scholar Data for Author ID ${googleScholarId}:`, googleScholarData);
-        }
-
-        console.log('------------------------------');
-        await delay(1000); // Delay between requests to avoid hitting rate limits
+        
+        const mergedPublications = mergePublicationsCommonFields(
+            dblpPublications, 
+            googleScholarData
+        );
+        
+        console.log('Merged Publications:', mergedPublications);
+        
+        await delay(1000);
     }
 }
+
 
 // Main function to control the flow
 async function main() {
